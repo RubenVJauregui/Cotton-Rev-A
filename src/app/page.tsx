@@ -164,8 +164,8 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
       .forEach((o, index) => rows.push({
         id: `order-${o.id || o.orderId || o.orderNo || index}`,
         workType: 'Outbound Order',
-        reference: o.orderNo || o.orderId || o.id || `Order ${index + 1}`,
-        customer: o.customerName || o.customerId || 'Cotton customer',
+        reference: o.orderNo || o.orderNumber || o.orderId || o.id || `Order ${index + 1}`,
+        customer: o.customerName || o.customer?.name || o.customerId || o.customer?.id || 'Cotton customer',
         status: o.status || 'PLANNED',
         orderType: o.orderType || 'Outbound',
         defaultAssignee: defaultName,
