@@ -1,1 +1,24 @@
-{"name":"cotton-wise-dashboard","version":"1.0.0","private":true,"scripts":{"build":"echo build-ok","start":"node server.js"},"dependencies":{"fastify":"latest"},"devDependencies":{}}
+{
+  "name": "cotton-wise-dashboard",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "14.2.21",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "jose": "5.9.6"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.10",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "typescript": "5.7.2"
+  }
+}
