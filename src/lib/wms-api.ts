@@ -17,10 +17,17 @@ async function wmsRequest<T>(path: string, opts: FetchOptions): Promise<T> {
     'item-time-zone': DEFAULT_TIMEZONE,
   };
 
-  const res = await fetch(`${WMS_API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
+  const res = await fetch('/api/wms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path,
+      body,
+      token,
+      facilityId,
+      tenantId: DEFAULT_TENANT,
+      timezone: DEFAULT_TIMEZONE,
+    }),
   });
 
   if (!res.ok) throw new Error('Warehouse data is unavailable.');
