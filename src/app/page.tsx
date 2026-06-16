@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { login, decodeJwt, getSessionFromStorage, saveSession, clearSession, JwtPayload } from '@/lib/auth';
 import { DEFAULT_FACILITY, DEFAULT_TIMEZONE, COTTON_JOSE } from '@/lib/constants';
-import { searchOutboundOrders, searchLoads, searchPickTasks, searchReceipts, searchUsers, OutboundOrder, Load, PickTask, Receipt, WmsUser } from '@/lib/wms-api';
+import { searchOutboundOrders, searchLoads, searchPickTasks, searchReceipts, searchUsers, assignDnToUser, OutboundOrder, Load, PickTask, Receipt, WmsUser } from '@/lib/wms-api';
 
 interface UserSession { token: string; userId: string; username: string; name: string; tenant: string; facilityId: string; }
 interface Toast { message: string; type: 'success' | 'error'; }
@@ -57,7 +57,7 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const [toast, setToast] = useState<Toast | null>(null);
   const [assigneeByRow, setAssigneeByRow] = useState<Record<string, string>>({});
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
-  const assignmentVerified = false;
+  const [assigningRowId, setAssigningRowId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setDataLoading(true);
@@ -84,12 +84,47 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   useEffect(() => { setAssigneeByRow((prev) => { const next = { ...prev }; for (const row of plannedRows) if (!next[row.id]) next[row.id] = row.defaultAssignee; return next; }); }, [plannedRows]);
 
   function showToast(message: string, type: 'success' | 'error' = 'success') { setToast({ message, type }); setTimeout(() => setToast(null), 4500); }
-  function reviewAssignment(row: SuggestionRow) {
-    const assignee = assigneeByRow[row.id] || row.defaultAssignee;
-    if (!window.confirm(`Confirm assignment?\n\nTask: ${row.reference}\nCustomer: ${row.customer}\nAssign to: ${assignee}\n\nPress OK to continue.`)) return;
-    showToast(assignmentVerified ? `Assignment submitted for ${row.reference}.` : `Assignment for ${row.reference} is ready for review. Write-back is pending verification.`, assignmentVerified ? 'success' : 'error');
+  function userIdForDisplay(value: string) {
+    const user = validAssignees.find((u) => displayUser(u) === value || String(u.userId || u.id || '') === value);
+    return String(user?.userId || user?.id || (value === COTTON_JOSE.name ? COTTON_JOSE.userId : ''));
   }
-  function autoAssignAll() { if (!window.confirm(`Confirm Auto Assign All?\n\n${plannedRows.length} Cotton order(s) will be prepared for assignment review.`)) return; showToast(`${plannedRows.length} Cotton assignment(s) prepared for review.`, 'error'); }
+
+  async function reviewAssignment(row: SuggestionRow) {
+    const assignee = assigneeByRow[row.id] || row.defaultAssignee;
+    const assigneeUserId = userIdForDisplay(assignee);
+    if (!assigneeUserId) { showToast('Select a valid Cotton assignee before assigning.', 'error'); return; }
+    if (!window.confirm(`Confirm assignment?
+
+DN: ${row.reference}
+Customer: ${row.customer}
+Assign to: ${assignee}
+
+If no pick task exists, WISE will create the pick task first, then assign it.`)) return;
+    setAssigningRowId(row.id);
+    const result = await assignDnToUser(session.token, row.reference, assigneeUserId, session.facilityId);
+    showToast(result.message, result.success ? 'success' : 'error');
+    setAssigningRowId(null);
+    if (result.success) await fetchData();
+  }
+
+  async function autoAssignAll() {
+    if (!plannedRows.length) return;
+    if (!window.confirm(`Confirm Auto Assign All?
+
+${plannedRows.length} Cotton order(s) will be assigned. If a DN has no pick task, WISE will create one first, then assign it.`)) return;
+    let success = 0;
+    for (const row of plannedRows) {
+      const assignee = assigneeByRow[row.id] || row.defaultAssignee;
+      const assigneeUserId = userIdForDisplay(assignee);
+      if (!assigneeUserId) continue;
+      setAssigningRowId(row.id);
+      const result = await assignDnToUser(session.token, row.reference, assigneeUserId, session.facilityId);
+      if (result.success) success += 1;
+    }
+    setAssigningRowId(null);
+    showToast(`${success} Cotton assignment(s) submitted.`, success ? 'success' : 'error');
+    await fetchData();
+  }
 
   const refreshed = lastRefreshed.toLocaleString('en-US', { timeZone: DEFAULT_TIMEZONE, month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const older48 = orders.filter((o) => olderThanHours(o.createdAt || o.createdTime, 48) && !isDropship(o.orderType)).length;
@@ -103,8 +138,8 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
 
     <main className="content-layout">
       <div className="main-col">
-        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${yardRows.length} rows`} /><table className="dash-table"><thead><tr><th>Equipment #</th><th>RN #</th><th>Check-In (PT)</th><th>Time in Yard</th><th>Customer</th><th>Location</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{yardRows.length ? yardRows.map((t, i) => <tr key={t.id || i}><td>{t.taskNo || t.id || `TASK-${i+1}`}</td><td>{(t.orderIds || [])[0] || 'Pending'}</td><td>{fmtDate(t.createdTime || t.createdAt)}</td><td>Pending</td><td>{(t.customerNames || [])[0] || 'Cotton task'}</td><td><select><option>DOCK{String(51+i).padStart(2,'0')}</option></select></td><td>{t.assigneeUserName || defaultAssignee}</td><td><button type="button" className="tiny-assign" onClick={() => reviewAssignment({ id: `yard-${t.id || i}`, workType: 'Pick Task', reference: t.taskNo || t.id || `TASK-${i+1}`, customer: (t.customerNames || [])[0] || 'Cotton task', status: t.status || 'NEW', orderType: t.pickType || 'Pick', defaultAssignee, historyCount: 0, rule: 'Open task' })}>Assign</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment rows returned.</td></tr>}</tbody></table></section>
-        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${plannedRows.length} of ${orders.length}`} /><div className="filters"><button className="chip active">All</button>{uniqueCustomers(orders).slice(0,5).map((c) => <button className="chip" key={c}>{c}</button>)}<input placeholder="Search orders..." /></div><table className="dash-table"><thead><tr><th>Order #</th><th>Customer</th><th>Assignee</th><th>Action</th><th>PO #</th><th>Created</th><th>Ship Method</th><th>Carrier</th><th>Schedule</th><th>MABD</th></tr></thead><tbody>{dataLoading ? <tr><td colSpan={10} className="empty-cell">Loading Cotton WISE data...</td></tr> : plannedRows.length ? plannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{validAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button className={assignmentVerified ? 'tiny-assign' : 'review-btn'} onClick={() => reviewAssignment(row)}>{assignmentVerified ? 'Assign' : 'Review only'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={10} className="empty-cell">No planned Cotton outbound orders found.</td></tr>}</tbody></table></section>
+        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${yardRows.length} rows`} /><table className="dash-table"><thead><tr><th>Equipment #</th><th>RN #</th><th>Check-In (PT)</th><th>Time in Yard</th><th>Customer</th><th>Location</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{yardRows.length ? yardRows.map((t, i) => <tr key={t.id || i}><td>{t.taskNo || t.id || `TASK-${i+1}`}</td><td>{(t.orderIds || [])[0] || 'Pending'}</td><td>{fmtDate(t.createdTime || t.createdAt)}</td><td>Pending</td><td>{(t.customerNames || [])[0] || 'Cotton task'}</td><td><select><option>DOCK{String(51+i).padStart(2,'0')}</option></select></td><td>{t.assigneeUserName || defaultAssignee}</td><td><button type="button" className="tiny-assign" disabled={assigningRowId === `yard-${t.id || i}`} onClick={() => reviewAssignment({ id: `yard-${t.id || i}`, workType: 'Pick Task', reference: (t.orderIds || [])[0] || t.taskNo || t.id || `TASK-${i+1}`, customer: (t.customerNames || [])[0] || 'Cotton task', status: t.status || 'NEW', orderType: t.pickType || 'Pick', defaultAssignee, historyCount: 0, rule: 'Open task' })}>{assigningRowId === `yard-${t.id || i}` ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment rows returned.</td></tr>}</tbody></table></section>
+        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${plannedRows.length} of ${orders.length}`} /><div className="filters"><button className="chip active">All</button>{uniqueCustomers(orders).slice(0,5).map((c) => <button className="chip" key={c}>{c}</button>)}<input placeholder="Search orders..." /></div><table className="dash-table"><thead><tr><th>Order #</th><th>Customer</th><th>Assignee</th><th>Action</th><th>PO #</th><th>Created</th><th>Ship Method</th><th>Carrier</th><th>Schedule</th><th>MABD</th></tr></thead><tbody>{dataLoading ? <tr><td colSpan={10} className="empty-cell">Loading Cotton WISE data...</td></tr> : plannedRows.length ? plannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{validAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment(row)}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={10} className="empty-cell">No planned Cotton outbound orders found.</td></tr>}</tbody></table></section>
       </div>
       <aside className="right-rail"><SidePanel title="Assigned Today" count="3 tasks" rows={tasks.filter((t)=>t.assigneeUserName).slice(0,3).map((t)=>[t.taskNo || t.id || 'Task', t.assigneeUserName || 'Assigned', fmtTime(t.startTime || t.createdTime || t.createdAt)])} /><SidePanel title="Cotton Assignees" count={`${validAssignees.length} assignees`} rows={validAssignees.slice(0,9).map((u)=>[initials(displayUser(u)), displayUser(u), ''])} assignees /></aside>
     </main>{toast && <div className={`toast toast-${toast.type}`}>{toast.message}</div>}</div>;

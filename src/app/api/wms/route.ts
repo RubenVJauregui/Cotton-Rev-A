@@ -12,10 +12,15 @@ const ALLOWED_PATHS = new Set([
   '/wms/outbound/pick-task/batch-assignment',
 ]);
 
+function isAllowedPath(path: string) {
+  if (ALLOWED_PATHS.has(path)) return true;
+  return /^\/wms\/outbound\/order-plan\/[^/]+\/(doCreatePickTask|create-task|release)$/.test(path);
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { path, body, token, facilityId, tenantId, timezone } = await req.json();
-    if (!path || typeof path !== 'string' || !ALLOWED_PATHS.has(path)) {
+    const { path, method, body, token, facilityId, tenantId, timezone } = await req.json();
+    if (!path || typeof path !== 'string' || !isAllowedPath(path)) {
       return NextResponse.json({ message: 'Requested warehouse data is unavailable.' }, { status: 400 });
     }
     if (!token || typeof token !== 'string') {
@@ -23,7 +28,7 @@ export async function POST(req: NextRequest) {
     }
 
     const upstream = await fetch(`${WMS_API_BASE_URL}${path}`, {
-      method: 'POST',
+      method: method || 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,

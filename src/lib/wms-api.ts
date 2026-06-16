@@ -22,6 +22,7 @@ async function wmsRequest<T>(path: string, opts: FetchOptions): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       path,
+      method,
       body,
       token,
       facilityId,
@@ -30,7 +31,10 @@ async function wmsRequest<T>(path: string, opts: FetchOptions): Promise<T> {
     }),
   });
 
-  if (!res.ok) throw new Error('Warehouse data is unavailable.');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || 'Warehouse data is unavailable.');
+  }
   const json = await res.json();
   if (json && json.code !== undefined && String(json.code) !== '0') {
     throw new Error(json.message || json.msg || 'Warehouse data is unavailable.');
@@ -99,6 +103,16 @@ export interface LoadTask {
   assigneeUserName?: string;
   loadId?: string;
   loadNo?: string;
+}
+
+export interface OrderPlan {
+  id?: string;
+  orderPlanId?: string;
+  planId?: string;
+  status?: string;
+  orderIds?: string[];
+  orderId?: string;
+  orderNo?: string;
 }
 
 export interface PickTask {
@@ -210,6 +224,38 @@ export async function searchLoadTasks(token: string, facilityId?: string): Promi
   } catch { return []; }
 }
 
+export async function searchOrderPlansByDn(token: string, dn: string, facilityId?: string): Promise<OrderPlan[]> {
+  const bodies = [
+    { pageNo: 1, currentPage: 1, pageSize: 20, orderIds: [dn] },
+    { pageNo: 1, currentPage: 1, pageSize: 20, orderId: dn },
+    { pageNo: 1, currentPage: 1, pageSize: 20, orderNo: dn },
+  ];
+  for (const body of bodies) {
+    try {
+      const res = await wmsRequest<PageResult<OrderPlan>>('/wms-bam/outbound/order-plan/search-by-paging', { token, facilityId, body });
+      const rows = rowsFrom(res);
+      if (rows.length) return rows;
+    } catch {}
+  }
+  return [];
+}
+
+export async function searchPickTasksByDn(token: string, dn: string, facilityId?: string): Promise<PickTask[]> {
+  const bodies = [
+    { pageNo: 1, currentPage: 1, pageSize: 50, orderIds: [dn] },
+    { pageNo: 1, currentPage: 1, pageSize: 50, orderId: dn },
+    { pageNo: 1, currentPage: 1, pageSize: 50, orderNo: dn },
+  ];
+  for (const body of bodies) {
+    try {
+      const res = await wmsRequest<PageResult<PickTask>>('/wms-bam/outbound/pick-task/search-by-paging', { token, facilityId, body });
+      const rows = rowsFrom(res);
+      if (rows.length) return rows;
+    } catch {}
+  }
+  return [];
+}
+
 export async function searchPickTasks(token: string, facilityId?: string, statuses?: string[]): Promise<PickTask[]> {
   try {
     const res = await wmsRequest<PageResult<PickTask>>('/wms-bam/outbound/pick-task/search-by-paging', {
@@ -256,4 +302,59 @@ export async function assignPickTasks(token: string, payload: AssignmentPayload,
     if (res.code === 0 || res.code === 200) return { success: true, message: 'Assignment completed successfully.' };
     return { success: false, message: res.message || 'Assignment failed.' };
   } catch { return { success: false, message: 'Unable to complete assignment. Please try again.' }; }
+}
+
+function taskIdOf(task: PickTask): string {
+  return String(task.id || task.taskId || task.originalTaskId || task.taskNo || '');
+}
+
+function planIdOf(plan: OrderPlan): string {
+  return String(plan.id || plan.orderPlanId || plan.planId || '');
+}
+
+async function createPickTaskForPlan(token: string, planId: string, facilityId?: string): Promise<void> {
+  const candidates = [
+    `/wms/outbound/order-plan/${encodeURIComponent(planId)}/doCreatePickTask`,
+    `/wms/outbound/order-plan/${encodeURIComponent(planId)}/create-task`,
+  ];
+  let lastError = 'Could not create pick task.';
+  for (const path of candidates) {
+    try {
+      await wmsRequest(path, { token, facilityId, method: path.endsWith('doCreatePickTask') ? 'PUT' : 'POST', body: {} });
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : lastError;
+    }
+  }
+  throw new Error(lastError);
+}
+
+export async function assignDnToUser(token: string, dn: string, assigneeUserId: string, facilityId?: string): Promise<{ success: boolean; message: string }> {
+  try {
+    let pickTasks = await searchPickTasksByDn(token, dn, facilityId);
+    if (!pickTasks.length) {
+      const plans = await searchOrderPlansByDn(token, dn, facilityId);
+      const planId = planIdOf(plans[0] || {});
+      if (!planId) return { success: false, message: `No pick task or order plan was found for ${dn}.` };
+      await createPickTaskForPlan(token, planId, facilityId);
+      pickTasks = await searchPickTasksByDn(token, dn, facilityId);
+    }
+
+    const taskIds = pickTasks.map(taskIdOf).filter(Boolean);
+    if (!taskIds.length) return { success: false, message: `A pick task could not be found for ${dn}.` };
+
+    const result = await assignPickTasks(token, {
+      taskIds,
+      assigneeUserId,
+      includesTaskSteps: true,
+      lastAssignedWhen: new Date().toISOString(),
+    }, facilityId);
+    if (!result.success) return result;
+
+    const verified = await searchPickTasksByDn(token, dn, facilityId);
+    const assigned = verified.some((task) => String(task.assigneeUserId || '') === String(assigneeUserId));
+    return { success: true, message: assigned ? `${dn} was assigned successfully.` : `${dn} assignment was submitted. Refresh WISE to verify.` };
+  } catch (err) {
+    return { success: false, message: err instanceof Error ? err.message : `Unable to assign ${dn}.` };
+  }
 }
