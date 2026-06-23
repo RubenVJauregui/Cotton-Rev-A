@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { login, decodeJwt, getSessionFromStorage, saveSession, clearSession, JwtPayload } from '@/lib/auth';
 import { DEFAULT_FACILITY, DEFAULT_TIMEZONE, COTTON_JOSE } from '@/lib/constants';
-import { searchOutboundOrders, searchLoads, searchPickTasks, searchReceipts, searchUsers, assignDnToUser, OutboundOrder, Load, PickTask, Receipt, WmsUser } from '@/lib/wms-api';
+import { searchOutboundOrders, searchLoads, searchPickTasks, searchReceipts, searchUsers, searchPickTaskHistory, assignDnToUser, OutboundOrder, Load, PickTask, Receipt, WmsUser } from '@/lib/wms-api';
 
 interface UserSession { token: string; userId: string; username: string; name: string; tenant: string; facilityId: string; }
 interface Toast { message: string; type: 'success' | 'error'; }
@@ -51,6 +51,7 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const [orders, setOrders] = useState<OutboundOrder[]>([]);
   const [loads, setLoads] = useState<Load[]>([]);
   const [tasks, setTasks] = useState<PickTask[]>([]);
+  const [historyTasks, setHistoryTasks] = useState<PickTask[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [users, setUsers] = useState<WmsUser[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
@@ -62,8 +63,8 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const fetchData = useCallback(async () => {
     setDataLoading(true);
     try {
-      const [o, l, t, r, u] = await Promise.all([searchOutboundOrders(session.token, session.facilityId), searchLoads(session.token, session.facilityId), searchPickTasks(session.token, session.facilityId), searchReceipts(session.token, session.facilityId), searchUsers(session.token, session.facilityId)]);
-      setOrders(o); setLoads(l); setTasks(t); setReceipts(r); setUsers(ensureJose(u)); setLastRefreshed(new Date());
+      const [o, l, t, h, r, u] = await Promise.all([searchOutboundOrders(session.token, session.facilityId), searchLoads(session.token, session.facilityId), searchPickTasks(session.token, session.facilityId), searchPickTaskHistory(session.token, session.facilityId), searchReceipts(session.token, session.facilityId), searchUsers(session.token, session.facilityId)]);
+      setOrders(o); setLoads(l); setTasks(t); setHistoryTasks(h); setReceipts(r); setUsers(ensureJose(u)); setLastRefreshed(new Date());
     } finally { setDataLoading(false); }
   }, [session.token, session.facilityId]);
 
@@ -72,12 +73,33 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const cottonAssignees = useMemo(() => validAssignees.slice(0, 9), [validAssignees]);
   const defaultAssignee = displayUser(cottonAssignees.find((u) => u.userId === COTTON_JOSE.userId) || cottonAssignees[0]);
 
-  const plannedRows: SuggestionRow[] = useMemo(() => orders.filter((o) => isAssignableStatus(o.status)).map((o, index) => ({
-    id: `order-${o.id || o.orderId || o.orderNo || index}`,
-    workType: 'Outbound Order', reference: o.orderNo || o.orderId || o.id || `Order ${index + 1}`,
-    customer: o.customerName || o.customerId || 'Cotton customer', status: o.status || 'PLANNED', orderType: o.orderType || 'RG',
-    defaultAssignee, historyCount: 0, rule: 'Customer history', created: o.createdTime || o.createdAt || '', carrier: o.referenceNo || o.poNo || '', schedule: o.expectedShipDate || '', mabd: o.appointmentTime || ''
-  })).slice(0, 120), [orders, defaultAssignee]);
+  function historicalAssigneeForCustomer(customer: string, workType = '') {
+    const allowed = new Set(cottonAssignees.map((u) => displayUser(u)));
+    const counts = new Map<string, number>();
+    const target = norm(customer);
+    const type = norm(workType);
+    for (const task of historyTasks) {
+      const assignee = displayUser({ name: task.assigneeUserName, userId: task.assigneeUserId } as WmsUser);
+      if (!assignee || !allowed.has(assignee)) continue;
+      const taskCustomers = (task.customerNames || []).map(norm);
+      const customerMatch = !target || taskCustomers.some((c) => c && (c === target || c.includes(target) || target.includes(c)));
+      const typeMatch = !type || norm(task.pickType || task.pickMethod).includes(type) || type.includes(norm(task.pickType || task.pickMethod));
+      if (customerMatch && typeMatch) counts.set(assignee, (counts.get(assignee) || 0) + 1);
+    }
+    const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    return { assignee: best?.[0] || defaultAssignee, count: best?.[1] || 0 };
+  }
+
+  const plannedRows: SuggestionRow[] = useMemo(() => orders.filter((o) => isAssignableStatus(o.status)).map((o, index) => {
+    const customer = o.customerName || o.customerId || 'Cotton customer';
+    const hist = historicalAssigneeForCustomer(customer, o.orderType || '');
+    return {
+      id: `order-${o.id || o.orderId || o.orderNo || index}`,
+      workType: 'Outbound Order', reference: o.orderNo || o.orderId || o.id || `Order ${index + 1}`,
+      customer, status: o.status || 'PLANNED', orderType: o.orderType || 'RG',
+      defaultAssignee: hist.assignee, historyCount: hist.count, rule: hist.count ? '30-day customer history' : 'Default Cotton assignee', created: o.createdTime || o.createdAt || '', carrier: o.referenceNo || o.poNo || '', schedule: o.expectedShipDate || '', mabd: o.appointmentTime || ''
+    };
+  }).slice(0, 120), [orders, defaultAssignee, historyTasks, cottonAssignees]);
 
   const yardRows = useMemo(() => tasks.filter((t) => String(t.status || '').toUpperCase() === 'NEW' || String(t.status || '').toUpperCase() === 'IN_PROGRESS').slice(0, 3), [tasks]);
   const suggestionsCount = plannedRows.length + tasks.filter((t) => String(t.status || '').toUpperCase() === 'NEW' && !t.assigneeUserId).length + loads.filter((l) => isAssignableStatus(l.status)).length + receipts.filter((r) => isAssignableStatus(r.status)).length;
@@ -183,3 +205,5 @@ function uniqueCustomers(orders: OutboundOrder[]) { return Array.from(new Set(or
 function fmtDate(v?: string) { if (!v) return '—'; const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toLocaleString('en-US', { timeZone: DEFAULT_TIMEZONE, month: '2-digit', day: '2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : v; }
 function fmtTime(v?: string) { if (!v) return '—'; const d = new Date(v); return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('en-US', { timeZone: DEFAULT_TIMEZONE, hour:'2-digit', minute:'2-digit' }) : v; }
 function initials(v: string) { return v.split(/\s+/).filter(Boolean).slice(0,2).map((p)=>p[0]).join('').toUpperCase(); }
+
+function norm(value?: string) { return String(value || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim(); }

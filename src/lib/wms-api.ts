@@ -267,6 +267,25 @@ export async function searchPickTasks(token: string, facilityId?: string, status
   } catch { return []; }
 }
 
+
+export async function searchPickTaskHistory(token: string, facilityId?: string): Promise<PickTask[]> {
+  const end = new Date();
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const bodies = [
+    { pageNo: 1, currentPage: 1, pageSize: 500, statuses: ['CLOSED'], endTimeFrom: start.toISOString(), endTimeTo: end.toISOString() },
+    { pageNo: 1, currentPage: 1, pageSize: 500, statuses: ['CLOSED'], createdTimeStart: start.toISOString(), createdTimeEnd: end.toISOString() },
+    { pageNo: 1, currentPage: 1, pageSize: 500, statuses: ['CLOSED', 'IN_PROGRESS'] },
+  ];
+  for (const body of bodies) {
+    try {
+      const res = await wmsRequest<PageResult<PickTask>>('/wms-bam/outbound/pick-task/search-by-paging', { token, facilityId, body });
+      const rows = rowsFrom(res);
+      if (rows.length) return rows;
+    } catch {}
+  }
+  return [];
+}
+
 export async function searchReceipts(token: string, facilityId?: string): Promise<Receipt[]> {
   try {
     const res = await wmsRequest<PageResult<Receipt>>('/wms-bam/inbound/receipt/search-by-paging', {
