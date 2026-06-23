@@ -65,6 +65,8 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const [assigneeByRow, setAssigneeByRow] = useState<Record<string, string>>({});
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
   const [assigningRowId, setAssigningRowId] = useState<string | null>(null);
+  const [section1Customer, setSection1Customer] = useState('ALL');
+  const [section2Customer, setSection2Customer] = useState('ALL');
 
   const fetchData = useCallback(async () => {
     setDataLoading(true);
@@ -111,6 +113,10 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   }).slice(0, 120), [orders, defaultAssignee, historyTasks, cottonAssignees]);
 
   const yardRows = useMemo(() => tasks.filter((t) => String(t.status || '').toUpperCase() === 'NEW' || String(t.status || '').toUpperCase() === 'IN_PROGRESS').slice(0, 3), [tasks]);
+  const section1Customers = useMemo(() => customerChipData(yardRows.map(customerNameFromTask)), [yardRows]);
+  const filteredYardRows = useMemo(() => yardRows.filter((t) => section1Customer === 'ALL' || customerNameFromTask(t) === section1Customer), [yardRows, section1Customer]);
+  const section2Customers = useMemo(() => customerChipData(plannedRows.map((row) => row.customer)), [plannedRows]);
+  const filteredPlannedRows = useMemo(() => plannedRows.filter((row) => section2Customer === 'ALL' || row.customer === section2Customer), [plannedRows, section2Customer]);
   const suggestionsCount = plannedRows.length + tasks.filter((t) => String(t.status || '').toUpperCase() === 'NEW' && !t.assigneeUserId).length + loads.filter((l) => isAssignableStatus(l.status)).length + receipts.filter((r) => isAssignableStatus(r.status)).length;
 
   useEffect(() => { setAssigneeByRow((prev) => { const next = { ...prev }; for (const row of plannedRows) if (!next[row.id]) next[row.id] = row.defaultAssignee; return next; }); }, [plannedRows]);
@@ -170,13 +176,32 @@ ${plannedRows.length} Cotton order(s) will be assigned. If a DN has no pick task
 
     <main className="content-layout">
       <div className="main-col">
-        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${yardRows.length} rows`} /><table className="dash-table"><thead><tr><th>Equipment #</th><th>RN #</th><th>Check-In (PT)</th><th>Time in Yard</th><th>Customer</th><th>Location</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{yardRows.length ? yardRows.map((t, i) => <tr key={t.id || i}><td>{t.taskNo || t.id || `TASK-${i+1}`}</td><td>{receiptRef(t)}</td><td>{fmtDate(t.createdTime || t.createdAt)}</td><td>Pending</td><td>{(t.customerNames || [])[0] || 'Cotton task'}</td><td><select><option>DOCK{String(51+i).padStart(2,'0')}</option></select></td><td><select className="inline-select" value={assigneeByRow[`yard-${t.id || i}`] || t.assigneeUserName || defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p, [`yard-${t.id || i}`]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === `yard-${t.id || i}`} onClick={() => reviewAssignment({ id: `yard-${t.id || i}`, workType: 'Pick Task', reference: (t.orderIds || [])[0] || t.taskNo || t.id || `TASK-${i+1}`, customer: (t.customerNames || [])[0] || 'Cotton task', status: t.status || 'NEW', orderType: t.pickType || 'Pick', defaultAssignee: assigneeByRow[`yard-${t.id || i}`] || t.assigneeUserName || defaultAssignee, historyCount: 0, rule: 'Open task' })}>{assigningRowId === `yard-${t.id || i}` ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment rows returned.</td></tr>}</tbody></table></section>
-        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${plannedRows.length} of ${orders.length}`} /><div className="filters"><button className="chip active">All</button>{uniqueCustomers(orders).slice(0,5).map((c) => <button className="chip" key={c}>{c}</button>)}<input placeholder="Search orders..." /></div><table className="dash-table"><thead><tr><th>Order #</th><th>Customer</th><th>Assignee</th><th>Action</th><th>PO #</th><th>Created</th><th>Ship Method</th><th>Carrier</th><th>Schedule</th><th>MABD</th></tr></thead><tbody>{dataLoading ? <tr><td colSpan={10} className="empty-cell">Loading Cotton WISE data...</td></tr> : plannedRows.length ? plannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment(row)}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={10} className="empty-cell">No planned Cotton outbound orders found.</td></tr>}</tbody></table></section>
+        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${filteredYardRows.length} rows`} /><CustomerChips customers={section1Customers} selected={section1Customer} onSelect={setSection1Customer} /><table className="dash-table"><thead><tr><th>Equipment #</th><th>RN #</th><th>Check-In (PT)</th><th>Time in Yard</th><th>Customer</th><th>Location</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{filteredYardRows.length ? filteredYardRows.map((t, i) => <tr key={t.id || i}><td>{t.taskNo || t.id || `TASK-${i+1}`}</td><td>{receiptRef(t)}</td><td>{fmtDate(t.createdTime || t.createdAt)}</td><td>Pending</td><td>{(t.customerNames || [])[0] || 'Cotton task'}</td><td><select><option>DOCK{String(51+i).padStart(2,'0')}</option></select></td><td><select className="inline-select" value={assigneeByRow[`yard-${t.id || i}`] || t.assigneeUserName || defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p, [`yard-${t.id || i}`]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === `yard-${t.id || i}`} onClick={() => reviewAssignment({ id: `yard-${t.id || i}`, workType: 'Pick Task', reference: (t.orderIds || [])[0] || t.taskNo || t.id || `TASK-${i+1}`, customer: (t.customerNames || [])[0] || 'Cotton task', status: t.status || 'NEW', orderType: t.pickType || 'Pick', defaultAssignee: assigneeByRow[`yard-${t.id || i}`] || t.assigneeUserName || defaultAssignee, historyCount: 0, rule: 'Open task' })}>{assigningRowId === `yard-${t.id || i}` ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment rows matched this customer.</td></tr>}</tbody></table></section>
+        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${filteredPlannedRows.length} of ${plannedRows.length}`} /><CustomerChips customers={section2Customers} selected={section2Customer} onSelect={setSection2Customer} showSearch /><table className="dash-table"><thead><tr><th>Order #</th><th>Customer</th><th>Assignee</th><th>Action</th><th>PO #</th><th>Created</th><th>Ship Method</th><th>Carrier</th><th>Schedule</th><th>MABD</th></tr></thead><tbody>{dataLoading ? <tr><td colSpan={10} className="empty-cell">Loading Cotton WISE data...</td></tr> : filteredPlannedRows.length ? filteredPlannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment(row)}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={10} className="empty-cell">No planned Cotton outbound orders matched this customer.</td></tr>}</tbody></table></section>
       </div>
       <aside className="right-rail"><SidePanel title="Assigned Today" count="3 tasks" rows={tasks.filter((t)=>t.assigneeUserName).slice(0,3).map((t)=>[t.taskNo || t.id || 'Task', t.assigneeUserName || 'Assigned', fmtTime(t.startTime || t.createdTime || t.createdAt)])} /><SidePanel title="Cotton Assignees" count={`${cottonAssignees.length} assignees`} rows={cottonAssignees.map((u)=>[initials(displayUser(u)), displayUser(u), ''])} assignees /></aside>
     </main>{toast && <div className={`toast toast-${toast.type}`}>{toast.message}</div>}</div>;
 }
 
+
+function customerNameFromTask(task: PickTask) {
+  return (task.customerNames || [])[0] || 'Cotton task';
+}
+
+function customerChipData(customers: string[]) {
+  const counts = new Map<string, number>();
+  for (const customer of customers) {
+    const name = String(customer || 'Unknown').trim() || 'Unknown';
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const rows = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const total = rows.reduce((sum, [, count]) => sum + count, 0);
+  return { total, rows };
+}
+
+function CustomerChips({ customers, selected, onSelect, showSearch = false }: { customers: { total: number; rows: [string, number][] }; selected: string; onSelect: (value: string) => void; showSearch?: boolean }) {
+  return <div className="filters customer-chips"><button type="button" className={`chip ${selected === 'ALL' ? 'active' : ''}`} onClick={() => onSelect('ALL')}>All ({customers.total})</button>{customers.rows.map(([name, count]) => <button type="button" className={`chip ${selected === name ? 'active' : ''}`} key={name} onClick={() => onSelect(name)}>{name} ({count})</button>)}{showSearch && <input placeholder="Search orders..." />}</div>;
+}
 
 function receiptRef(task: PickTask) {
   const anyTask = task as PickTask & {
