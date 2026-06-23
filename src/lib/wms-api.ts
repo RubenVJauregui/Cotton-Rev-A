@@ -146,11 +146,66 @@ export interface Receipt {
   poNo?: string;
   referenceNo?: string;
   entryId?: string;
+  entry?: string;
   createdAt?: string;
   createdTime?: string;
   containerNo?: string;
   trailerNo?: string;
+  equipmentNo?: string;
   inYardTime?: string;
+  devannedTime?: string;
+  devanTime?: string;
+  devannedWhen?: string;
+  isDevanned?: boolean;
+  dockId?: string;
+  dockName?: string;
+}
+
+export interface EntryTicket {
+  id?: string;
+  entryTicketId?: string;
+  status?: string;
+  receipts?: Array<{ id?: string; status?: string; containerNo?: string; equipmentNo?: string; customerName?: string }>;
+  entryTicketCheck?: { containerNOs?: string[]; trailers?: string[] };
+  checkInStartTime?: string;
+  checkInEndTime?: string;
+  createdWhen?: string;
+  dockId?: string;
+  dockName?: string;
+}
+
+export interface EntryTicketDetail {
+  id?: string;
+  equipmentActions?: Array<{
+    equipmentNo?: string;
+    containerNo?: string;
+    trailerNo?: string;
+    receiptIds?: string[];
+    currentLocationId?: string;
+    currentLocationName?: string;
+  }>;
+  receipts?: Array<{ id?: string; containerNo?: string; equipmentNo?: string; dockId?: string; dockName?: string }>;
+  checkInEndTime?: string;
+  checkInStartTime?: string;
+  dockId?: string;
+  dockName?: string;
+}
+
+export interface InYardRow {
+  equipmentNumber: string;
+  equipmentType: string;
+  entryTicket: string;
+  receiptId: string;
+  dockId: string;
+  dockName: string;
+  checkIn: string;
+  timeInYard: string;
+  customer: string;
+  customerName: string;
+  location: string;
+  status: string;
+  id: string;
+  containerNo: string;
 }
 
 export interface WmsUser {
@@ -300,15 +355,149 @@ export async function searchReceipts(token: string, facilityId?: string): Promis
   } catch { return []; }
 }
 
-export async function searchInYardReceipts(token: string, facilityId?: string): Promise<Receipt[]> {
+export async function searchInYardReceipts(token: string, facilityId?: string): Promise<InYardRow[]> {
+  const rows: InYardRow[] = [];
+  const seenContainers = new Set<string>();
+  const seenReceipts = new Set<string>();
+
+  // Step 1: Query entry tickets with yard-checked-in statuses (reference logic)
+  try {
+    const res = await wmsRequest<PageResult<EntryTicket>>('/wms-bam/entry-ticket/search-by-paging', {
+      token,
+      facilityId,
+      body: {
+        statuses: ['Gate Checked In', 'Window Checked In', 'Dock Checked In', 'Waiting'],
+        currentPage: 1,
+        pageSize: 500,
+      },
+    });
+    const tickets = rowsFrom(res);
+    const CLOSED_STATUSES = new Set(['CLOSED', 'FORCE_CLOSED', 'TASK_COMPLETED', 'CANCELLED']);
+
+    for (const ticket of tickets) {
+      const etId = ticket.id || '';
+      const ticketReceipts = ticket.receipts || [];
+      const check = ticket.entryTicketCheck || {};
+      const containers = check.containerNOs || [];
+      const trailers = check.trailers || [];
+      const containerNo = containers[0] || trailers[0] || '';
+      const checkIn = ticket.checkInStartTime || ticket.createdWhen || '';
+
+      if (!ticketReceipts.some(r => !CLOSED_STATUSES.has(r.status || ''))) continue;
+
+      const openReceipt = ticketReceipts.find(r => !CLOSED_STATUSES.has(r.status || ''));
+      const customer = openReceipt?.customerName || '';
+      const equipNum = containerNo || openReceipt?.containerNo || '';
+
+      if (!equipNum || equipNum.length < 5 || !customer) continue;
+
+      let receiptId = openReceipt?.id || '';
+
+      // Try to get better receipt data from entry-ticket detail
+      try {
+        const detail = await wmsRequest<{ data?: EntryTicketDetail } & EntryTicketDetail>(
+          `/wms-bam/entry-ticket/${encodeURIComponent(etId)}`,
+          { token, facilityId, method: 'GET' }
+        );
+        const d = detail?.data || detail || {};
+        const actions = Array.isArray(d.equipmentActions) ? d.equipmentActions : [];
+        const matchAction = actions.find(a => {
+          const eqNo = String(a.equipmentNo || a.containerNo || a.trailerNo || '').trim();
+          return equipNum && eqNo === equipNum;
+        }) || actions.find(a => Array.isArray(a.receiptIds) && a.receiptIds.length > 0);
+
+        if (matchAction?.receiptIds?.[0]) receiptId = matchAction.receiptIds[0];
+        const detailCheckIn = d.checkInEndTime || d.checkInStartTime || '';
+        if (detailCheckIn && !checkIn) Object.assign(ticket, { checkInStartTime: detailCheckIn });
+      } catch {}
+
+      if (!receiptId) continue;
+
+      seenContainers.add(equipNum);
+      seenReceipts.add(receiptId);
+
+      rows.push({
+        equipmentNumber: equipNum,
+        equipmentType: 'Container',
+        entryTicket: etId,
+        receiptId,
+        dockId: ticket.dockId || '',
+        dockName: ticket.dockName || '',
+        checkIn: ticket.checkInStartTime || ticket.createdWhen || '',
+        timeInYard: '',
+        customer,
+        customerName: customer,
+        location: ticket.dockName || '',
+        status: ticket.status || '',
+        id: etId,
+        containerNo: equipNum,
+      });
+    }
+  } catch {}
+
+  // Step 2: Supplement with open receipts that have containers and haven't been devanned
   try {
     const res = await wmsRequest<PageResult<Receipt>>('/wms-bam/inbound/receipt/search-by-paging', {
       token,
       facilityId,
-      body: { pageNo: 1, currentPage: 1, pageSize: 100, statuses: ['IN_YARD'] },
+      body: {
+        excludeStatuses: ['CLOSED', 'FORCE_CLOSED', 'TASK_COMPLETED', 'CANCELLED'],
+        currentPage: 1,
+        pageSize: 500,
+      },
     });
-    return rowsFrom(res);
-  } catch { return []; }
+    const receipts = rowsFrom(res);
+
+    const supplementRows: InYardRow[] = [];
+    for (const r of receipts) {
+      const containerNo = r.containerNo || '';
+      const rid = r.id || '';
+      const customer = r.customerName || '';
+      const entryId = r.entryId || r.entry || '';
+
+      if (!containerNo || containerNo.length < 6) continue;
+      if (!entryId || !customer) continue;
+      if (r.devannedTime || r.devanTime || r.devannedWhen || r.isDevanned) continue;
+      if (seenContainers.has(containerNo) || seenReceipts.has(rid)) continue;
+
+      seenContainers.add(containerNo);
+      supplementRows.push({
+        equipmentNumber: containerNo,
+        equipmentType: 'Container',
+        entryTicket: entryId,
+        receiptId: rid,
+        dockId: r.dockId || '',
+        dockName: r.dockName || '',
+        checkIn: '',
+        timeInYard: '',
+        customer,
+        customerName: customer,
+        location: r.dockName || '',
+        status: r.status || 'OPEN',
+        id: entryId || rid,
+        containerNo,
+      });
+    }
+
+    // Resolve checkIn times for supplement rows
+    for (const row of supplementRows) {
+      if (row.entryTicket) {
+        try {
+          const detail = await wmsRequest<{ data?: EntryTicketDetail } & EntryTicketDetail>(
+            `/wms-bam/entry-ticket/${encodeURIComponent(row.entryTicket)}`,
+            { token, facilityId, method: 'GET' }
+          );
+          const d = detail?.data || detail || {};
+          const checkIn = d.checkInEndTime || d.checkInStartTime || '';
+          if (checkIn) row.checkIn = checkIn;
+        } catch {}
+      }
+    }
+
+    rows.push(...supplementRows);
+  } catch {}
+
+  return rows;
 }
 
 export async function searchUsers(token: string, facilityId?: string): Promise<WmsUser[]> {
