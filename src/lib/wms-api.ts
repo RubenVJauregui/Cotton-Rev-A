@@ -148,6 +148,9 @@ export interface Receipt {
   entryId?: string;
   createdAt?: string;
   createdTime?: string;
+  containerNo?: string;
+  trailerNo?: string;
+  inYardTime?: string;
 }
 
 export interface WmsUser {
@@ -292,6 +295,17 @@ export async function searchReceipts(token: string, facilityId?: string): Promis
       token,
       facilityId,
       body: { pageNo: 1, currentPage: 1, pageSize: 100 },
+    });
+    return rowsFrom(res);
+  } catch { return []; }
+}
+
+export async function searchInYardReceipts(token: string, facilityId?: string): Promise<Receipt[]> {
+  try {
+    const res = await wmsRequest<PageResult<Receipt>>('/wms-bam/inbound/receipt/search-by-paging', {
+      token,
+      facilityId,
+      body: { pageNo: 1, currentPage: 1, pageSize: 100, statuses: ['IN_YARD'] },
     });
     return rowsFrom(res);
   } catch { return []; }
