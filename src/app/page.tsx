@@ -177,7 +177,7 @@ ${plannedRows.length} Cotton order(s) will be assigned. If a DN has no pick task
     <div className="top-actions"><div><button type="button" onClick={() => showToast('Auto Suggest is already showing Cotton work available for assignment.', 'success')}>Auto Suggest</button><button type="button" onClick={autoAssignAll}>Auto Assign All</button><button type="button" onClick={autoAssignAll}>Autonomous</button></div><div><button onClick={fetchData}>Refresh</button><button>Download CSV</button><button onClick={onLogout}>Sign out</button></div></div>
     <header className="page-title"><h1>Cotton Dashboard</h1><p>Cotton ({session.facilityId})</p><span>Last refreshed {refreshed}</span></header>
     <div className="hintbar">• Fresh WISE data every 5 minutes &nbsp;&nbsp; • Auto Suggest holds Cotton RNs and orders until Auto Assign is confirmed &nbsp;&nbsp; • Auto Assign assigns new tasks only after confirmation</div>
-    <section className="stat-grid"><Stat value={0} label="In-Yard Full" /><Stat value={orders.length} label="Planned Orders" /><Stat value={older48} label="Older Than 48h" /></section>
+    <section className="stat-grid"><Stat value={filteredYardRows.length} label="In-Yard Full" /><Stat value={orders.length} label="Planned Orders" /><Stat value={older48} label="Older Than 48h" /></section>
 
     <main className="content-layout">
       <div className="main-col">
