@@ -47,6 +47,12 @@ function LoginPage({ onSubmit, error, loading }: { onSubmit: (e: React.FormEvent
   return <div className="login-container"><div className="login-card"><p className="eyebrow">Warehouse dashboard</p><h1>Cotton Dashboard</h1><p>Sign in to review Cotton WISE work and assignment suggestions.</p><form onSubmit={onSubmit}><div className="form-group"><label htmlFor="username">Username</label><input id="username" name="username" type="text" required autoComplete="username" /></div><div className="form-group"><label htmlFor="password">Password</label><input id="password" name="password" type="password" required autoComplete="current-password" /></div><button type="submit" className="btn-primary" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>{error && <div className="error-msg">{error}</div>}</form></div></div>;
 }
 
+function isSelectableAssignee(user: WmsUser) {
+  const label = displayUser(user);
+  const username = String(user.username || user.userName || '').toLowerCase();
+  return !/dashboard|test|demo|system|service|admin/i.test(label) && !/dashboard|test|demo|system|service|admin/i.test(username);
+}
+
 function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () => void }) {
   const [orders, setOrders] = useState<OutboundOrder[]>([]);
   const [loads, setLoads] = useState<Load[]>([]);
@@ -70,8 +76,11 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
 
   useEffect(() => { fetchData(); }, [fetchData]);
   const validAssignees = useMemo(() => ensureJose(users), [users]);
-  const cottonAssignees = useMemo(() => validAssignees.slice(0, 9), [validAssignees]);
-  const defaultAssignee = displayUser(cottonAssignees.find((u) => u.userId === COTTON_JOSE.userId) || cottonAssignees[0]);
+  const cottonAssignees = useMemo(() => {
+    const humans = validAssignees.filter(isSelectableAssignee);
+    return humans.slice(0, 9);
+  }, [validAssignees]);
+  const defaultAssignee = displayUser(cottonAssignees.find((u) => u.userId === COTTON_JOSE.userId) || cottonAssignees[0] || { name: COTTON_JOSE.name, userId: COTTON_JOSE.userId });
 
   function historicalAssigneeForCustomer(customer: string, workType = '') {
     const allowed = new Set(cottonAssignees.map((u) => displayUser(u)));
@@ -80,7 +89,7 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
     const type = norm(workType);
     for (const task of historyTasks) {
       const assignee = displayUser({ name: task.assigneeUserName, userId: task.assigneeUserId } as WmsUser);
-      if (!assignee || !allowed.has(assignee)) continue;
+      if (!assignee || !allowed.has(assignee) || /dashboard|test|demo|system|service|admin/i.test(assignee)) continue;
       const taskCustomers = (task.customerNames || []).map(norm);
       const customerMatch = !target || taskCustomers.some((c) => c && (c === target || c.includes(target) || target.includes(c)));
       const typeMatch = !type || norm(task.pickType || task.pickMethod).includes(type) || type.includes(norm(task.pickType || task.pickMethod));
