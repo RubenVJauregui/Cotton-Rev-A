@@ -8,6 +8,36 @@ import { searchOutboundOrders, searchLoads, searchPickTasks, searchReceipts, sea
 interface UserSession { token: string; userId: string; username: string; name: string; tenant: string; facilityId: string; }
 interface Toast { message: string; type: 'success' | 'error'; }
 type SuggestionRow = { id: string; workType: string; reference: string; customer: string; status: string; orderType: string; defaultAssignee: string; historyCount: number; rule: string; created?: string; carrier?: string; schedule?: string; mabd?: string; };
+type SortDir = 'asc' | 'desc';
+type SortState = { col: string; dir: SortDir };
+
+function useSort(initial?: SortState) {
+  const [sort, setSort] = useState<SortState | null>(initial || null);
+  const toggle = useCallback((col: string) => {
+    setSort((prev) => {
+      if (prev?.col === col) return prev.dir === 'asc' ? { col, dir: 'desc' } : null;
+      return { col, dir: 'asc' };
+    });
+  }, []);
+  return { sort, toggle };
+}
+
+function sortRows<T>(rows: T[], sort: SortState | null, accessor: (row: T, col: string) => string | number): T[] {
+  if (!sort) return rows;
+  const { col, dir } = sort;
+  return [...rows].sort((a, b) => {
+    const av = accessor(a, col);
+    const bv = accessor(b, col);
+    if (typeof av === 'number' && typeof bv === 'number') return dir === 'asc' ? av - bv : bv - av;
+    const cmp = String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+    return dir === 'asc' ? cmp : -cmp;
+  });
+}
+
+function SortTh({ col, sort, toggle, children }: { col: string; sort: SortState | null; toggle: (col: string) => void; children: React.ReactNode }) {
+  const active = sort?.col === col;
+  return <th onClick={() => toggle(col)}>{children}{active && <span className="sort-ind">{sort!.dir === 'asc' ? '▲' : '▼'}</span>}</th>;
+}
 
 export default function Home() {
   const [session, setSession] = useState<UserSession | null>(null);
@@ -70,6 +100,9 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
   const [section2Customer, setSection2Customer] = useState('ALL');
   const [section3Customer, setSection3Customer] = useState('ALL');
   const [locationByRow, setLocationByRow] = useState<Record<string, string>>({});
+  const s1Sort = useSort();
+  const s2Sort = useSort();
+  const s3Sort = useSort();
 
   const fetchData = useCallback(async () => {
     setDataLoading(true);
@@ -117,12 +150,52 @@ function Dashboard({ session, onLogout }: { session: UserSession; onLogout: () =
 
   const yardRows = useMemo(() => inYardReceipts.slice(0, 50), [inYardReceipts]);
   const section1Customers = useMemo(() => customerChipData(yardRows.map((r) => r.customerName || r.customer || '')), [yardRows]);
-  const filteredYardRows = useMemo(() => yardRows.filter((r) => section1Customer === 'ALL' || (r.customerName || r.customer || '') === section1Customer), [yardRows, section1Customer]);
+  const filteredYardRows = useMemo(() => {
+    const filtered = yardRows.filter((r) => section1Customer === 'ALL' || (r.customerName || r.customer || '') === section1Customer);
+    return sortRows(filtered, s1Sort.sort, (r, col) => {
+      switch (col) {
+        case 'equipment': return r.equipmentNumber || r.containerNo || '';
+        case 'rn': return r.receiptId || '';
+        case 'checkin': return r.checkIn || '';
+        case 'timeinyard': return r.checkIn ? Date.now() - new Date(r.checkIn).getTime() : 0;
+        case 'customer': return r.customerName || r.customer || '';
+        case 'location': return r.location || r.dockName || '';
+        default: return '';
+      }
+    });
+  }, [yardRows, section1Customer, s1Sort.sort]);
   const section2Customers = useMemo(() => customerChipData(plannedRows.map((row) => row.customer)), [plannedRows]);
-  const filteredPlannedRows = useMemo(() => plannedRows.filter((row) => section2Customer === 'ALL' || row.customer === section2Customer), [plannedRows, section2Customer]);
+  const filteredPlannedRows = useMemo(() => {
+    const filtered = plannedRows.filter((row) => section2Customer === 'ALL' || row.customer === section2Customer);
+    return sortRows(filtered, s2Sort.sort, (r, col) => {
+      switch (col) {
+        case 'order': return r.reference;
+        case 'customer': return r.customer;
+        case 'created': return r.created || '';
+        case 'shipmethod': return r.orderType;
+        case 'carrier': return r.carrier || '';
+        case 'schedule': return r.schedule || '';
+        case 'mabd': return r.mabd || '';
+        default: return '';
+      }
+    });
+  }, [plannedRows, section2Customer, s2Sort.sort]);
   const shippingRows = useMemo(() => buildShippingRows(loads, orders, defaultAssignee), [loads, orders, defaultAssignee]);
   const section3Customers = useMemo(() => customerChipData(shippingRows.map((row) => row.customer)), [shippingRows]);
-  const filteredShippingRows = useMemo(() => shippingRows.filter((row) => section3Customer === 'ALL' || row.customer === section3Customer), [shippingRows, section3Customer]);
+  const filteredShippingRows = useMemo(() => {
+    const filtered = shippingRows.filter((row) => section3Customer === 'ALL' || row.customer === section3Customer);
+    return sortRows(filtered, s3Sort.sort, (r, col) => {
+      switch (col) {
+        case 'dn': return r.reference;
+        case 'customer': return r.customer;
+        case 'dnstatus': return r.status;
+        case 'loadstatus': return r.loadStatus;
+        case 'dock': return r.dock || '';
+        case 'et': return r.et || '';
+        default: return '';
+      }
+    });
+  }, [shippingRows, section3Customer, s3Sort.sort]);
   const suggestionsCount = plannedRows.length + tasks.filter((t) => String(t.status || '').toUpperCase() === 'NEW' && !t.assigneeUserId).length + loads.filter((l) => isAssignableStatus(l.status)).length + receipts.filter((r) => isAssignableStatus(r.status)).length;
 
   useEffect(() => { setAssigneeByRow((prev) => { const next = { ...prev }; for (const row of plannedRows) if (!next[row.id]) next[row.id] = row.defaultAssignee; return next; }); }, [plannedRows]);
@@ -182,9 +255,9 @@ ${plannedRows.length} Cotton order(s) will be assigned. If a DN has no pick task
 
     <main className="content-layout">
       <div className="main-col">
-        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${filteredYardRows.length} rows`} /><CustomerChips customers={section1Customers} selected={section1Customer} onSelect={setSection1Customer} /><table className="dash-table"><thead><tr><th>Equipment #</th><th>RN #</th><th>Check-In (PT)</th><th>Time in Yard</th><th>Customer</th><th>Location</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{filteredYardRows.length ? filteredYardRows.map((r, i) => <tr key={r.id || r.receiptId || i}><td>{r.equipmentNumber || r.containerNo || '—'}</td><td className="purple-text">{r.receiptId || '—'}</td><td>{fmtDate(r.checkIn)}</td><td>{timeInYard(r.checkIn)}</td><td>{r.customerName || r.customer || '—'}</td><td><DockSelect value={locationByRow[`yard-${r.id || r.receiptId || i}`] || r.location || r.dockName || ''} onChange={(value) => setLocationByRow((p) => ({ ...p, [`yard-${r.id || r.receiptId || i}`]: value }))} /></td><td><select className="inline-select" value={assigneeByRow[`yard-${r.id || r.receiptId || i}`] || defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p, [`yard-${r.id || r.receiptId || i}`]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === `yard-${r.id || r.receiptId || i}`} onClick={() => reviewAssignment({ id: `yard-${r.id || r.receiptId || i}`, workType: 'Receipt', reference: r.receiptId || r.entryTicket || `RN-${i+1}`, customer: r.customerName || r.customer || 'Cotton', status: r.status || 'IN_YARD', orderType: 'Inbound', defaultAssignee: assigneeByRow[`yard-${r.id || r.receiptId || i}`] || defaultAssignee, historyCount: 0, rule: 'In-yard receipt' })}>{assigningRowId === `yard-${r.id || r.receiptId || i}` ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment at this time.</td></tr>}</tbody></table></section>
-        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${filteredPlannedRows.length} of ${plannedRows.length}`} /><CustomerChips customers={section2Customers} selected={section2Customer} onSelect={setSection2Customer} showSearch /><table className="dash-table"><thead><tr><th>Order #</th><th>Customer</th><th>Assignee</th><th>Action</th><th>Created</th><th>Ship Method</th><th>Carrier</th><th>Schedule</th><th>MABD</th></tr></thead><tbody>{dataLoading ? <tr><td colSpan={9} className="empty-cell">Loading Cotton WISE data...</td></tr> : filteredPlannedRows.length ? filteredPlannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment(row)}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={9} className="empty-cell">No planned Cotton outbound orders matched this customer.</td></tr>}</tbody></table></section>
-        <section className="dash-panel planned-panel"><PanelTitle title="Section 3 - Outbound Shipping" count={`${filteredShippingRows.length} rows`} /><CustomerChips customers={section3Customers} selected={section3Customer} onSelect={setSection3Customer} /><table className="dash-table"><thead><tr><th>DN / Order</th><th>Customer</th><th>DN Status</th><th>Load Status</th><th>Dock</th><th>Assignee</th><th>Action</th></tr></thead><tbody>{filteredShippingRows.length ? filteredShippingRows.map((row, i) => <tr key={row.id || i}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><span className="status-pill success">{row.status}</span></td><td><span className="status-pill accent">{row.loadStatus}</span></td><td><DockSelect value={locationByRow[row.id] || row.dock || ''} onChange={(value) => setLocationByRow((p) => ({ ...p, [row.id]: value }))} /></td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment({ id: row.id, workType: 'Outbound Shipping', reference: row.reference, customer: row.customer, status: row.status, orderType: 'Shipping', defaultAssignee: assigneeByRow[row.id] || row.defaultAssignee, historyCount: 0, rule: 'Outbound shipping' })}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={7} className="empty-cell">No outbound shipping rows matched this customer.</td></tr>}</tbody></table></section>
+        <section className="dash-panel"><PanelTitle title="Section 1 — In-Yard FULL Equipment" count={`${filteredYardRows.length} rows`} /><CustomerChips customers={section1Customers} selected={section1Customer} onSelect={setSection1Customer} /><table className="dash-table"><thead><tr><SortTh col="equipment" sort={s1Sort.sort} toggle={s1Sort.toggle}>Equipment #</SortTh><SortTh col="rn" sort={s1Sort.sort} toggle={s1Sort.toggle}>RN #</SortTh><SortTh col="checkin" sort={s1Sort.sort} toggle={s1Sort.toggle}>Check-In (PT)</SortTh><SortTh col="timeinyard" sort={s1Sort.sort} toggle={s1Sort.toggle}>Time in Yard</SortTh><SortTh col="customer" sort={s1Sort.sort} toggle={s1Sort.toggle}>Customer</SortTh><SortTh col="location" sort={s1Sort.sort} toggle={s1Sort.toggle}>Location</SortTh><th>Assignee</th><th>Action</th></tr></thead><tbody>{filteredYardRows.length ? filteredYardRows.map((r, i) => <tr key={r.id || r.receiptId || i}><td>{r.equipmentNumber || r.containerNo || '—'}</td><td className="purple-text">{r.receiptId || '—'}</td><td>{fmtDate(r.checkIn)}</td><td>{timeInYard(r.checkIn)}</td><td>{r.customerName || r.customer || '—'}</td><td><DockSelect value={locationByRow[`yard-${r.id || r.receiptId || i}`] || r.location || r.dockName || ''} onChange={(value) => setLocationByRow((p) => ({ ...p, [`yard-${r.id || r.receiptId || i}`]: value }))} /></td><td><select className="inline-select" value={assigneeByRow[`yard-${r.id || r.receiptId || i}`] || defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p, [`yard-${r.id || r.receiptId || i}`]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === `yard-${r.id || r.receiptId || i}`} onClick={() => reviewAssignment({ id: `yard-${r.id || r.receiptId || i}`, workType: 'Receipt', reference: r.receiptId || r.entryTicket || `RN-${i+1}`, customer: r.customerName || r.customer || 'Cotton', status: r.status || 'IN_YARD', orderType: 'Inbound', defaultAssignee: assigneeByRow[`yard-${r.id || r.receiptId || i}`] || defaultAssignee, historyCount: 0, rule: 'In-yard receipt' })}>{assigningRowId === `yard-${r.id || r.receiptId || i}` ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={8} className="empty-cell">No in-yard full equipment at this time.</td></tr>}</tbody></table></section>
+        <section className="dash-panel planned-panel"><PanelTitle title="Section 2 — PLANNED Outbound Orders" count={`${filteredPlannedRows.length} of ${plannedRows.length}`} /><CustomerChips customers={section2Customers} selected={section2Customer} onSelect={setSection2Customer} showSearch /><table className="dash-table"><thead><tr><SortTh col="order" sort={s2Sort.sort} toggle={s2Sort.toggle}>Order #</SortTh><SortTh col="customer" sort={s2Sort.sort} toggle={s2Sort.toggle}>Customer</SortTh><th>Assignee</th><th>Action</th><SortTh col="created" sort={s2Sort.sort} toggle={s2Sort.toggle}>Created</SortTh><SortTh col="shipmethod" sort={s2Sort.sort} toggle={s2Sort.toggle}>Ship Method</SortTh><SortTh col="carrier" sort={s2Sort.sort} toggle={s2Sort.toggle}>Carrier</SortTh><SortTh col="schedule" sort={s2Sort.sort} toggle={s2Sort.toggle}>Schedule</SortTh><SortTh col="mabd" sort={s2Sort.sort} toggle={s2Sort.toggle}>MABD</SortTh></tr></thead><tbody>{dataLoading ? <tr><td colSpan={9} className="empty-cell">Loading Cotton WISE data...</td></tr> : filteredPlannedRows.length ? filteredPlannedRows.map((row) => <tr key={row.id}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment(row)}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td><td>{row.created ? fmtDate(row.created) : '—'}</td><td>{row.orderType}</td><td>{row.carrier || '—'}</td><td>{row.schedule || '—'}</td><td>{row.mabd || '—'}</td></tr>) : <tr><td colSpan={9} className="empty-cell">No planned Cotton outbound orders matched this customer.</td></tr>}</tbody></table></section>
+        <section className="dash-panel planned-panel"><PanelTitle title="Section 3 - Outbound Shipping" count={`${filteredShippingRows.length} rows`} /><CustomerChips customers={section3Customers} selected={section3Customer} onSelect={setSection3Customer} /><table className="dash-table"><thead><tr><SortTh col="dn" sort={s3Sort.sort} toggle={s3Sort.toggle}>DN / Order</SortTh><SortTh col="customer" sort={s3Sort.sort} toggle={s3Sort.toggle}>Customer</SortTh><SortTh col="dnstatus" sort={s3Sort.sort} toggle={s3Sort.toggle}>DN Status</SortTh><SortTh col="loadstatus" sort={s3Sort.sort} toggle={s3Sort.toggle}>Load Status</SortTh><SortTh col="dock" sort={s3Sort.sort} toggle={s3Sort.toggle}>Dock</SortTh><th>Assignee</th><th>Action</th></tr></thead><tbody>{filteredShippingRows.length ? filteredShippingRows.map((row, i) => <tr key={row.id || i}><td className="purple-text">{row.reference}</td><td>{row.customer}</td><td><span className="status-pill success">{row.status}</span></td><td><span className="status-pill accent">{row.loadStatus}</span></td><td><DockSelect value={locationByRow[row.id] || row.dock || ''} onChange={(value) => setLocationByRow((p) => ({ ...p, [row.id]: value }))} /></td><td><select className="inline-select" value={assigneeByRow[row.id] || row.defaultAssignee} onChange={(e) => setAssigneeByRow((p) => ({...p,[row.id]: e.target.value}))}>{cottonAssignees.map((u) => <option key={u.userId || u.username} value={displayUser(u)}>{displayUser(u)}</option>)}</select></td><td><button type="button" className="tiny-assign" disabled={assigningRowId === row.id} onClick={() => reviewAssignment({ id: row.id, workType: 'Outbound Shipping', reference: row.reference, customer: row.customer, status: row.status, orderType: 'Shipping', defaultAssignee: assigneeByRow[row.id] || row.defaultAssignee, historyCount: 0, rule: 'Outbound shipping' })}>{assigningRowId === row.id ? 'Assigning...' : 'Assign'}</button></td></tr>) : <tr><td colSpan={7} className="empty-cell">No outbound shipping rows matched this customer.</td></tr>}</tbody></table></section>
       </div>
       <aside className="right-rail"><SidePanel title="Assigned Today" count="3 tasks" rows={tasks.filter((t)=>t.assigneeUserName).slice(0,3).map((t)=>[t.taskNo || t.id || 'Task', t.assigneeUserName || 'Assigned', fmtTime(t.startTime || t.createdTime || t.createdAt)])} /><SidePanel title="Cotton Assignees" count={`${cottonAssignees.length} assignees`} rows={cottonAssignees.map((u)=>[initials(displayUser(u)), displayUser(u), ''])} assignees /></aside>
     </main>{toast && <div className={`toast toast-${toast.type}`}>{toast.message}</div>}</div>;
